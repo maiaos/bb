@@ -57,7 +57,10 @@ const GITHUB_PLUGIN = {
   provenance: "catalog" as const,
   isOrphanedBuiltin: false,
   catalogEntryId: "github",
+  catalogMarketplaceName: "bb-official",
   publisherLabel: "BB Official",
+  categoryId: null,
+  category: null,
   sourceDisplay: "BB Official · GitHub",
   updateState: EMPTY_PLUGIN_UPDATE_STATE,
 } satisfies PluginListItem;

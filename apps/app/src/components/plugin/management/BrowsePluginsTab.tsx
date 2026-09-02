@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useDebounceValue } from "usehooks-ts";
 import { Button } from "@bb/shared-ui/button";
-import { PLUGIN_CATALOG_CATEGORIES, pluginCatalogCategory } from "@bb/domain";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -38,15 +37,14 @@ import {
   pluginBrowseSort,
   pluginBrowseSortDirection,
   pluginBrowseSortOptions,
-  type PluginBrowseCategoryOption,
 } from "./PluginBrowseControls";
 import {
-  UNCATEGORIZED_PLUGIN_CATEGORY_ID,
   pluginBrowseShelves,
   pluginCategoryFilterId,
   sortPluginEntries,
   type PluginBrowseShelf,
 } from "./plugin-browse-discovery";
+import { pluginCategoryFilterOptions } from "./plugin-category-options";
 import {
   CatalogEntryIconChip,
   formatPluginInstallCount,
@@ -96,7 +94,14 @@ export function BrowsePluginsTab({
   const sort =
     requestedSort === "most-installed" && !installsKnown ? null : requestedSort;
   const categoryOptions = useMemo(
-    () => categoryFilterOptions(entries, selectedCategories),
+    () =>
+      pluginCategoryFilterOptions(
+        entries.map((entry) => ({
+          id: pluginCategoryFilterId(entry),
+          label: entry.category ?? null,
+        })),
+        selectedCategories,
+      ),
     [entries, selectedCategories],
   );
   const filteredEntries = useMemo(() => {
@@ -310,60 +315,6 @@ export function BrowsePluginsTab({
       </div>
     </ResourceCollectionViewport>
   );
-}
-
-function categoryFilterOptions(
-  entries: readonly PluginCatalogSearchEntry[],
-  selected: readonly string[],
-): PluginBrowseCategoryOption[] {
-  const labels = new Map<string, string>();
-  const counts = new Map<string, number>();
-  const unknownIds: string[] = [];
-  for (const entry of entries) {
-    const id = pluginCategoryFilterId(entry);
-    if (!labels.has(id)) {
-      labels.set(
-        id,
-        id === UNCATEGORIZED_PLUGIN_CATEGORY_ID
-          ? "Uncategorized"
-          : (entry.category ?? id),
-      );
-      if (
-        id !== UNCATEGORIZED_PLUGIN_CATEGORY_ID &&
-        pluginCatalogCategory(id) === undefined
-      ) {
-        unknownIds.push(id);
-      }
-    }
-    counts.set(id, (counts.get(id) ?? 0) + 1);
-  }
-  for (const id of selected) {
-    if (labels.has(id)) continue;
-    const category = pluginCatalogCategory(id);
-    labels.set(
-      id,
-      id === UNCATEGORIZED_PLUGIN_CATEGORY_ID
-        ? "Uncategorized"
-        : (category?.displayName ?? id),
-    );
-    if (id !== UNCATEGORIZED_PLUGIN_CATEGORY_ID && category === undefined) {
-      unknownIds.push(id);
-    }
-  }
-  const orderedIds = [
-    ...PLUGIN_CATALOG_CATEGORIES.map((category) => category.id).filter((id) =>
-      labels.has(id),
-    ),
-    ...unknownIds,
-    ...(labels.has(UNCATEGORIZED_PLUGIN_CATEGORY_ID)
-      ? [UNCATEGORIZED_PLUGIN_CATEGORY_ID]
-      : []),
-  ];
-  return orderedIds.map((id) => ({
-    id,
-    label: labels.get(id) ?? id,
-    count: counts.get(id) ?? 0,
-  }));
 }
 
 function BrowseShelf({
