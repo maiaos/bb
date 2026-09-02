@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
@@ -53,11 +59,89 @@ function renderRow(item: PluginListItem) {
   );
 }
 
+function mutationPlugin(item: PluginListItem) {
+  return {
+    ...item,
+    iconUrl: item.compactIconUrl,
+    screenshots: [],
+    collections: [],
+    providerIds: [],
+    icons: {},
+  };
+}
+
 afterEach(() => {
   cleanup();
 });
 
 describe("InstalledPluginRow", () => {
+  it("fires the enable and disable actions", async () => {
+    const enabled = plugin({ id: "enabled" });
+    const disabled = plugin({
+      id: "disabled",
+      enabled: false,
+      status: "disabled",
+    });
+    const request = vi.fn(async (input: RequestInfo | URL) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      const item = url.includes("/disabled/") ? disabled : enabled;
+      return new Response(
+        JSON.stringify({ ok: true, plugin: mutationPlugin(item) }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", request);
+    const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
+    render(
+      <MemoryRouter>
+        <QueryClientWrapper>
+          <InstalledPluginRow plugin={enabled} onUpdateClick={vi.fn()} />
+          <InstalledPluginRow plugin={disabled} onUpdateClick={vi.fn()} />
+        </QueryClientWrapper>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole("switch", { name: "Disable enabled" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Enable disabled" }));
+
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    expect(request.mock.calls.map(([input]) => String(input))).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("/api/v1/plugins/enabled/disable"),
+        expect.stringContaining("/api/v1/plugins/disabled/enable"),
+      ]),
+    );
+  });
+
+  it("fires the update action and keeps its signal", () => {
+    const onUpdateClick = vi.fn();
+    const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
+    render(
+      <MemoryRouter>
+        <QueryClientWrapper>
+          <InstalledPluginRow
+            plugin={plugin({
+              updateState: {
+                ...EMPTY_PLUGIN_UPDATE_STATE,
+                availableVersion: "0.3.0",
+              },
+            })}
+            onUpdateClick={onUpdateClick}
+          />
+        </QueryClientWrapper>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Update to 0.3.0" }));
+    expect(onUpdateClick).toHaveBeenCalledOnce();
+    expect(screen.getByTestId("plugin-update-signal-notify")).toBeTruthy();
+  });
+
   it("shows the status word and detail and marks the switch when a plugin is not running", () => {
     renderRow(
       plugin({

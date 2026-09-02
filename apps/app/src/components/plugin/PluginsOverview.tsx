@@ -13,6 +13,8 @@ import {
   ResourceSortMenu,
   ResourceToolbar,
 } from "@bb/shared-ui/resource-list";
+import { Button } from "@bb/shared-ui/button";
+import { EmptyStatePanel } from "@bb/shared-ui/empty-state";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { CreateWithTemplatesButton } from "@/components/create-via-prompt-examples";
 import { CREATE_PLUGIN_PROMPT } from "@bb/client-core";
@@ -25,9 +27,20 @@ import { BrowsePluginsTab } from "@/components/plugin/management/BrowsePluginsTa
 import { CheckPluginUpdatesButton } from "@/components/plugin/management/CheckPluginUpdatesButton";
 import { InstalledPluginsTab } from "@/components/plugin/management/InstalledPluginsTab";
 import {
-  pluginPublisherFilterId,
-  pluginPublisherFilterOptions,
-} from "@/components/plugin/plugin-provenance";
+  PluginBrowseCategoryFilter,
+  type PluginBrowseCategoryOption,
+} from "@/components/plugin/management/PluginBrowseControls";
+import {
+  installedCategoryFacetOptions,
+  installedSourceFacetOptions,
+  installedStateFacetOptions,
+  isInstalledSourceFilter,
+  isInstalledStateFilter,
+  pluginMatchesInstalledFilters,
+  type InstalledFacetOption,
+  type InstalledSourceFilter,
+  type InstalledStateFilter,
+} from "@/components/plugin/management/installed-plugin-filters";
 import { PLUGINS_INSTALLED_DESCRIPTION } from "@/components/plugin/plugins-collection-copy";
 import { usePluginList } from "@/hooks/queries/plugin-settings-queries";
 import {
@@ -42,39 +55,91 @@ function modeFromSearchParams(value: string | null): PluginsCollectionMode {
   return "browse";
 }
 
+function stateFiltersFromSearchParams(
+  searchParams: URLSearchParams,
+): InstalledStateFilter[] {
+  return [
+    ...new Set(searchParams.getAll("state").filter(isInstalledStateFilter)),
+  ];
+}
+
+function sourceFiltersFromSearchParams(
+  searchParams: URLSearchParams,
+): InstalledSourceFilter[] {
+  return [
+    ...new Set(searchParams.getAll("source").filter(isInstalledSourceFilter)),
+  ];
+}
+
+function categoryFiltersFromSearchParams(
+  searchParams: URLSearchParams,
+): string[] {
+  return [...new Set(searchParams.getAll("category").filter(Boolean))];
+}
+
+function countedResourceOptions<T extends string>(
+  options: readonly InstalledFacetOption<T>[],
+) {
+  return options.map((option) => ({
+    id: option.id,
+    label: option.label,
+    leading: (
+      <span className="text-2xs font-medium tabular-nums text-subtle-foreground">
+        {option.count.toLocaleString()}
+      </span>
+    ),
+  }));
+}
+
 export function PluginsOverview({
   onOpenPlugin,
 }: {
   onOpenPlugin?: (pluginId: string, trigger: HTMLButtonElement) => void;
 } = {}) {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const listQuery = usePluginList({ enabled: true });
   const plugins = useMemo(
     () => listQuery.data?.plugins ?? [],
     [listQuery.data?.plugins],
   );
   const activeMode = modeFromSearchParams(searchParams.get("view"));
-  const [installedQuery, setInstalledQuery] = useState("");
+  const installedQuery = searchParams.get("query") ?? "";
+  const stateFilters = stateFiltersFromSearchParams(searchParams);
+  const sourceFilters = sourceFiltersFromSearchParams(searchParams);
+  const categoryFilters = categoryFiltersFromSearchParams(searchParams);
   const [installedViewport, setInstalledViewport] =
     useState<HTMLDivElement | null>(null);
   const [installedSortDirection, setInstalledSortDirection] = useState<
     "asc" | "desc"
   >("asc");
-  const [typeFilters, setTypeFilters] = useState<string[]>([]);
-  const typeFilterOptions = useMemo(
-    () => pluginPublisherFilterOptions(plugins),
+  const stateFilterOptions = useMemo(
+    () => countedResourceOptions(installedStateFacetOptions(plugins)),
     [plugins],
   );
-  const activeTypeFilters = useMemo(() => {
-    const offered = new Set(typeFilterOptions.map((option) => option.id));
-    return typeFilters.filter((value) => offered.has(value));
-  }, [typeFilterOptions, typeFilters]);
-  const normalizedInstalledQuery = installedQuery.trim().toLowerCase();
+  const sourceFilterOptions = useMemo(
+    () =>
+      countedResourceOptions(
+        installedSourceFacetOptions(plugins, sourceFilters),
+      ),
+    [plugins, sourceFilters],
+  );
+  const categoryFilterOptions = useMemo<PluginBrowseCategoryOption[]>(
+    () => installedCategoryFacetOptions(plugins, categoryFilters),
+    [categoryFilters, plugins],
+  );
+  const normalizedInstalledQuery = installedQuery.trim().toLocaleLowerCase();
+  const hasInstalledFilters =
+    normalizedInstalledQuery !== "" ||
+    stateFilters.length > 0 ||
+    sourceFilters.length > 0 ||
+    categoryFilters.length > 0;
   const installedResetKey = [
     normalizedInstalledQuery,
     installedSortDirection,
-    [...activeTypeFilters].sort().join(","),
+    [...stateFilters].sort().join(","),
+    [...sourceFilters].sort().join(","),
+    [...categoryFilters].sort().join(","),
   ].join("\u0000");
   const installedPageSize = useResourceViewportPageSize(installedViewport, {
     resetKey: installedResetKey,
@@ -84,28 +149,35 @@ export function PluginsOverview({
     initial: AddPluginInitial | null;
   }>({ open: false, initial: null });
 
+  const changeInstalledParams = (
+    key: "state" | "source" | "category",
+    values: readonly string[],
+  ) => {
+    const next = new URLSearchParams(searchParams);
+    next.delete(key);
+    for (const value of values) next.append(key, value);
+    setSearchParams(next, { replace: true });
+  };
+
+  const clearInstalledFilters = () => {
+    const next = new URLSearchParams(searchParams);
+    for (const key of ["query", "state", "source", "category"]) {
+      next.delete(key);
+    }
+    setSearchParams(next, { replace: true });
+  };
+
   const visiblePlugins = useMemo(
     () =>
       plugins
-        .filter((plugin) => {
-          if (
-            activeTypeFilters.length > 0 &&
-            !activeTypeFilters.includes(pluginPublisherFilterId(plugin))
-          ) {
-            return false;
-          }
-          if (normalizedInstalledQuery.length === 0) return true;
-          return [
-            plugin.id,
-            plugin.name ?? "",
-            plugin.description ?? "",
-            plugin.version,
-            plugin.sourceDisplay,
-          ]
-            .join(" ")
-            .toLowerCase()
-            .includes(normalizedInstalledQuery);
-        })
+        .filter((plugin) =>
+          pluginMatchesInstalledFilters(plugin, {
+            query: installedQuery,
+            states: stateFilters,
+            sources: sourceFilters,
+            categories: categoryFilters,
+          }),
+        )
         .sort((left, right) => {
           const enabledResult = Number(!left.enabled) - Number(!right.enabled);
           if (enabledResult !== 0) return enabledResult;
@@ -125,10 +197,12 @@ export function PluginsOverview({
           return left.id.localeCompare(right.id);
         }),
     [
-      activeTypeFilters,
+      categoryFilters,
+      installedQuery,
       installedSortDirection,
-      normalizedInstalledQuery,
       plugins,
+      sourceFilters,
+      stateFilters,
     ],
   );
   const installedList = useResourceInfiniteItems(visiblePlugins, {
@@ -186,17 +260,48 @@ export function PluginsOverview({
           <ResourceToolbar
             searchValue={installedQuery}
             searchPlaceholder="Search installed plugins"
-            onSearchChange={setInstalledQuery}
+            onSearchChange={(value) => {
+              const next = new URLSearchParams(searchParams);
+              if (value === "") next.delete("query");
+              else next.set("query", value);
+              setSearchParams(next, { replace: true });
+            }}
             action={installedActions}
             controls={
               <>
                 <ResourceMultiSelectMenu
-                  label="Type"
+                  label="State"
                   icon="SlidersHorizontal"
                   compact
-                  selectedValues={activeTypeFilters}
-                  options={typeFilterOptions}
-                  onChange={setTypeFilters}
+                  selectedValues={stateFilters}
+                  options={stateFilterOptions}
+                  onChange={(values) =>
+                    changeInstalledParams(
+                      "state",
+                      values.filter(isInstalledStateFilter),
+                    )
+                  }
+                />
+                <ResourceMultiSelectMenu
+                  label="Source"
+                  icon="FolderGit"
+                  compact
+                  selectedValues={sourceFilters}
+                  options={sourceFilterOptions}
+                  onChange={(values) =>
+                    changeInstalledParams(
+                      "source",
+                      values.filter(isInstalledSourceFilter),
+                    )
+                  }
+                />
+                <PluginBrowseCategoryFilter
+                  selectionMode="multiple"
+                  value={categoryFilters}
+                  options={categoryFilterOptions}
+                  onChange={(values) =>
+                    changeInstalledParams("category", values)
+                  }
                 />
                 <ResourceSortMenu
                   value="alpha"
@@ -224,16 +329,29 @@ export function PluginsOverview({
           ) : listQuery.isFetching && listQuery.data === undefined ? (
             <ResourceListState state="loading" message="Loading plugins" />
           ) : plugins.length > 0 && visiblePlugins.length === 0 ? (
-            <ResourceListState
-              state="empty"
-              message={
-                normalizedInstalledQuery === ""
-                  ? "No plugins match these filters."
-                  : activeTypeFilters.length > 0
-                    ? `No plugins match "${installedQuery}" with these filters.`
-                    : `No plugins match "${installedQuery}"`
-              }
-            />
+            <EmptyStatePanel role="status" className="py-6">
+              <div className="flex flex-col items-center gap-2">
+                <span>
+                  {normalizedInstalledQuery === ""
+                    ? "No plugins match these filters."
+                    : stateFilters.length > 0 ||
+                        sourceFilters.length > 0 ||
+                        categoryFilters.length > 0
+                      ? `No plugins match "${installedQuery}" with these filters.`
+                      : `No plugins match "${installedQuery}"`}
+                </span>
+                {hasInstalledFilters ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={clearInstalledFilters}
+                  >
+                    Clear filters
+                  </Button>
+                ) : null}
+              </div>
+            </EmptyStatePanel>
           ) : (
             <>
               <InstalledPluginsTab plugins={installedList.items} />
