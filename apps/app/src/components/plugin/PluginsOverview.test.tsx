@@ -825,6 +825,15 @@ describe("PluginsOverview", () => {
       },
       {
         ...AUTOMATIONS_PLUGIN,
+        id: "direct-url",
+        name: "Direct URL",
+        provenance: "direct",
+        catalogMarketplaceName: undefined,
+        publisherLabel: null,
+        source: "https://github.com/acme/direct-plugin.git",
+      },
+      {
+        ...AUTOMATIONS_PLUGIN,
         id: "npm",
         name: "npm",
         provenance: "direct",
@@ -853,6 +862,14 @@ describe("PluginsOverview", () => {
 
     await screen.findByText("Path");
     fireEvent.pointerDown(screen.getByRole("button", { name: "Source" }));
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Git" }));
+    await waitFor(() =>
+      expect(installedRowIds()).toEqual([
+        "plugin-row-direct-url",
+        "plugin-row-git",
+      ]),
+    );
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Git" }));
     fireEvent.click(
       screen.getByRole("menuitemcheckbox", { name: "Acme Plugins" }),
     );
@@ -955,16 +972,18 @@ describe("PluginsOverview", () => {
     await waitFor(() =>
       expect(installedRowIds()).toEqual(["plugin-row-secure-notes"]),
     );
-    const resultParams = new URLSearchParams(
-      screen.getByTestId("location-search").textContent ?? "",
-    );
-    expect(resultParams.get("query")).toBe("notes");
-    expect(resultParams.getAll("state")).toEqual(["disabled"]);
-    expect(resultParams.getAll("source")).toEqual(["bb-community"]);
-    expect(resultParams.getAll("category")).toEqual(["security"]);
+    await waitFor(() => {
+      const resultParams = new URLSearchParams(
+        screen.getByTestId("location-search").textContent ?? "",
+      );
+      expect(resultParams.get("query")).toBe("notes");
+      expect(resultParams.getAll("state")).toEqual(["disabled"]);
+      expect(resultParams.getAll("source")).toEqual(["bb-community"]);
+      expect(resultParams.getAll("category")).toEqual(["security"]);
+    });
   });
 
-  it("searches installed plugin names, ids, and descriptions", async () => {
+  it("searches all supported installed plugin fields", async () => {
     installFetch([
       { ...AUTOMATIONS_PLUGIN, id: "alpha", name: "Name Match" },
       {
@@ -978,6 +997,18 @@ describe("PluginsOverview", () => {
         id: "third",
         name: "Third Plugin",
         description: "Description Match",
+      },
+      {
+        ...AUTOMATIONS_PLUGIN,
+        id: "version-match",
+        name: "Version Plugin",
+        version: "9.8.7",
+      },
+      {
+        ...AUTOMATIONS_PLUGIN,
+        id: "source-match",
+        name: "Source Plugin",
+        sourceDisplay: "GitHub · Acme source",
       },
     ]);
     const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
@@ -999,6 +1030,69 @@ describe("PluginsOverview", () => {
     expect(installedRowIds()).toEqual(["plugin-row-id-match"]);
     fireEvent.change(search, { target: { value: "Description Match" } });
     expect(installedRowIds()).toEqual(["plugin-row-third"]);
+    fireEvent.change(search, { target: { value: "9.8.7" } });
+    expect(installedRowIds()).toEqual(["plugin-row-version-match"]);
+    fireEvent.change(search, { target: { value: "Acme source" } });
+    expect(installedRowIds()).toEqual(["plugin-row-source-match"]);
+  });
+
+  it("keeps rapid Installed search input and writes the complete URL", async () => {
+    installFetch([
+      { ...AUTOMATIONS_PLUGIN, id: "codex", name: "Codex provider" },
+    ]);
+    const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
+    render(
+      <MemoryRouter initialEntries={["/extensions/plugins?view=installed"]}>
+        <QueryClientWrapper>
+          <PluginsOverview />
+          <LocationSearch />
+        </QueryClientWrapper>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("Codex provider");
+    const search = screen.getByRole("textbox", {
+      name: "Search installed plugins",
+    });
+    for (const value of ["c", "co", "cod", "code", "codex"]) {
+      fireEvent.change(search, { target: { value } });
+    }
+    expect(search).toHaveProperty("value", "codex");
+    expect(installedRowIds()).toEqual(["plugin-row-codex"]);
+    await waitFor(() => {
+      const params = new URLSearchParams(
+        screen.getByTestId("location-search").textContent ?? "",
+      );
+      expect(params.get("query")).toBe("codex");
+    });
+  });
+
+  it("resolves saved built-in category labels without installed matches", async () => {
+    installFetch([
+      {
+        ...AUTOMATIONS_PLUGIN,
+        id: "workflow",
+        name: "Workflow",
+      },
+    ]);
+    const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
+    render(
+      <MemoryRouter
+        initialEntries={[
+          "/extensions/plugins?view=installed&category=security",
+        ]}
+      >
+        <QueryClientWrapper>
+          <PluginsOverview />
+        </QueryClientWrapper>
+      </MemoryRouter>,
+    );
+
+    expect(
+      await screen.findByRole("button", {
+        name: "Filter plugins by category: Security",
+      }),
+    ).toBeTruthy();
   });
 
   it("loads Installed filters from the URL and clears them inline", async () => {
