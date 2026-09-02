@@ -23,6 +23,9 @@ import {
 } from "../../src/schema.js";
 import { createMigratedConnection } from "../helpers/migrated-connection.js";
 
+const COMPLETED_EVENT_OUTPUT_MIGRATION_RESCAN_INTERVAL_MS =
+  24 * 60 * 60 * 1_000;
+
 function setup() {
   const db = createMigratedConnection();
   const host = upsertHost(db, noopNotifier, {
@@ -205,6 +208,40 @@ describe("completed event output migration", () => {
     db.$client.close();
   });
 
+  it("uses the new-write UTF-16 threshold for astral Unicode output", () => {
+    const migratedAt = 1_800_000_000_000;
+    const output = "😀".repeat(20_000);
+    const { db, thread } = setup();
+    insertLegacyOutput({
+      createdAt: migratedAt - 1,
+      db,
+      eventId: "evt_astral_unicode",
+      itemKind: "commandExecution",
+      output,
+      outputPath: "aggregatedOutput",
+      sequence: 1,
+      threadId: thread.id,
+    });
+
+    expect(output.length).toBe(40_000);
+    expect(migrateCommandOutput(db, migratedAt)).toMatchObject({
+      action: "migrated",
+      eventId: "evt_astral_unicode",
+      migratedRows: 1,
+      retained: true,
+    });
+    const [stored] = listStoredEventRows(db, { threadId: thread.id });
+    const [hydrated] = hydrateRetainedEventOutputRows(
+      db,
+      stored ? [stored] : [],
+      migratedAt,
+    );
+    expect(hydrated && readOutput(hydrated.data, "aggregatedOutput")).toBe(
+      output,
+    );
+    db.$client.close();
+  });
+
   it("previews an already expired output without retaining a sidecar", () => {
     const migratedAt = 1_800_000_000_000;
     const createdAt = migratedAt - COMPLETED_EVENT_OUTPUT_RETENTION_MS;
@@ -332,7 +369,7 @@ describe("completed event output migration", () => {
     restarted.$client.close();
   });
 
-  it("wraps the cursor and finds a row inserted behind it", () => {
+  it("stores completion and wraps after the rescan interval", () => {
     const migratedAt = 1_800_000_000_000;
     const output = "w".repeat(40_000);
     const { db, thread } = setup();
@@ -347,7 +384,13 @@ describe("completed event output migration", () => {
       threadId: thread.id,
     });
     expect(migrateCommandOutput(db, migratedAt).eventId).toBe("evt_wrap_later");
-    expect(migrateCommandOutput(db, migratedAt).action).toBe("wrapped");
+    expect(migrateCommandOutput(db, migratedAt).action).toBe("complete");
+    expect(
+      migrateCommandOutput(
+        db,
+        migratedAt + COMPLETED_EVENT_OUTPUT_MIGRATION_RESCAN_INTERVAL_MS - 1,
+      ),
+    ).toMatchObject({ action: "complete", scanRows: 0 });
     insertLegacyOutput({
       createdAt: migratedAt - 2,
       db,
@@ -358,9 +401,33 @@ describe("completed event output migration", () => {
       sequence: 2,
       threadId: thread.id,
     });
-    expect(migrateCommandOutput(db, migratedAt).eventId).toBe(
-      "evt_wrap_earlier",
-    );
+    expect(
+      migrateCommandOutput(
+        db,
+        migratedAt + COMPLETED_EVENT_OUTPUT_MIGRATION_RESCAN_INTERVAL_MS,
+      ).action,
+    ).toBe("wrapped");
+    expect(
+      migrateCommandOutput(
+        db,
+        migratedAt + COMPLETED_EVENT_OUTPUT_MIGRATION_RESCAN_INTERVAL_MS,
+      ).eventId,
+    ).toBe("evt_wrap_earlier");
+    expect(
+      migrateCommandOutput(
+        db,
+        migratedAt + COMPLETED_EVENT_OUTPUT_MIGRATION_RESCAN_INTERVAL_MS,
+      ).action,
+    ).toBe("scanned");
+    expect(
+      migrateCommandOutput(
+        db,
+        migratedAt + COMPLETED_EVENT_OUTPUT_MIGRATION_RESCAN_INTERVAL_MS,
+      ).action,
+    ).toBe("complete");
+    expect(
+      db.select().from(maintenanceScanCursors).all()[0]?.lastCreatedAt,
+    ).toBe(-1);
     db.$client.close();
   });
 

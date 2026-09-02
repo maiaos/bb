@@ -20,7 +20,6 @@ function previewRow(row: TimelineRow): TimelineRow {
   if (
     row.kind !== "work" ||
     (row.workKind !== "command" && row.workKind !== "tool") ||
-    row.outputPreview !== undefined ||
     row.output.length <= TIMELINE_INLINE_OUTPUT_PREVIEW_THRESHOLD_CHARS
   ) {
     return row;
@@ -28,7 +27,7 @@ function previewRow(row: TimelineRow): TimelineRow {
   return {
     ...row,
     output: buildTimelineOutputPreview(row.output),
-    outputPreview: { totalChars: row.output.length },
+    outputPreview: row.outputPreview ?? { totalChars: row.output.length },
   };
 }
 

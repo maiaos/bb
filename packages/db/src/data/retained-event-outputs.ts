@@ -1,33 +1,23 @@
-import { and, gt, inArray, lte } from "drizzle-orm";
+import { and, gt, inArray, lte, sql } from "drizzle-orm";
 import type { ThreadEventItemType, ThreadEventType } from "@bb/domain";
 import type { DbQueryConnection } from "../connection.js";
-import type {
-  RetainedEventOutputItemKind,
-  RetainedEventOutputPath,
-} from "../retained-event-output.js";
-import { retainedEventOutputs } from "../schema.js";
 import {
   COMPLETED_EVENT_OUTPUT_RETAINED_HEAD_CHARS,
   COMPLETED_EVENT_OUTPUT_RETAINED_TAIL_CHARS,
   COMPLETED_EVENT_OUTPUT_RETENTION_MS,
   COMPLETED_EVENT_OUTPUT_TRUNCATION_THRESHOLD_CHARS,
-} from "./sweeps.js";
+  RETAINED_EVENT_OUTPUT_TARGETS,
+  type RetainedEventOutputPath,
+  type RetainedEventOutputTarget,
+} from "../retained-event-output.js";
+import { retainedEventOutputs } from "../schema.js";
+
+export { RETAINED_EVENT_OUTPUT_TARGETS };
+export type { RetainedEventOutputTarget };
 
 const COMPLETED_EVENT_OUTPUT_TRUNCATION_MARKER =
   "\n\n[... output truncated by retention policy; showing beginning and end ...]\n\n";
 const RETAINED_EVENT_OUTPUT_LOOKUP_BATCH_SIZE = 100;
-
-export interface RetainedEventOutputTarget {
-  itemKind: RetainedEventOutputItemKind;
-  outputPath: RetainedEventOutputPath;
-}
-
-export const RETAINED_EVENT_OUTPUT_TARGETS = [
-  { itemKind: "commandExecution", outputPath: "aggregatedOutput" },
-  { itemKind: "toolCall", outputPath: "result" },
-  { itemKind: "webFetch", outputPath: "resultText" },
-  { itemKind: "webSearch", outputPath: "resultText" },
-] as const satisfies readonly RetainedEventOutputTarget[];
 
 interface PreparedRetainedEventOutput {
   expiresAt: number;
@@ -61,6 +51,12 @@ interface RetainedEventOutputHydrationRow {
   eventId: string;
   outputPath: RetainedEventOutputPath;
   value: string;
+}
+
+interface RetainedEventOutputSizeRow {
+  eventId: string;
+  outputPath: RetainedEventOutputPath;
+  valueBytes: number;
 }
 
 interface DeleteExpiredRetainedEventOutputsArgs {
@@ -178,14 +174,21 @@ function hydrateEventData(
   }
   const item = payload.item;
   item[output.outputPath] = output.value;
+  removeOutputTruncation(item, output.outputPath);
+  return JSON.stringify(payload);
+}
+
+function removeOutputTruncation(
+  item: Record<string, unknown>,
+  outputPath: RetainedEventOutputPath,
+): void {
   const truncation = item.truncation;
   if (isJsonObject(truncation)) {
-    delete truncation[output.outputPath];
+    delete truncation[outputPath];
     if (Object.keys(truncation).length === 0) {
       delete item.truncation;
     }
   }
-  return JSON.stringify(payload);
 }
 
 export function hydrateRetainedEventOutputRows<
@@ -238,6 +241,133 @@ export function hydrateRetainedEventOutputRows<
     const output = outputsByEventId.get(row.id);
     return output ? { ...row, data: hydrateEventData(row.data, output) } : row;
   });
+}
+
+function listRetainedEventOutputSizes(
+  db: DbQueryConnection,
+  eventIds: readonly string[],
+  now: number,
+  escaped: boolean,
+): RetainedEventOutputSizeRow[] {
+  const sizes: RetainedEventOutputSizeRow[] = [];
+  for (
+    let start = 0;
+    start < eventIds.length;
+    start += RETAINED_EVENT_OUTPUT_LOOKUP_BATCH_SIZE
+  ) {
+    const valueBytes = escaped
+      ? sql<number>`octet_length(json_quote(${retainedEventOutputs.value}))`
+      : sql<number>`octet_length(${retainedEventOutputs.value})`;
+    sizes.push(
+      ...db
+        .select({
+          eventId: retainedEventOutputs.eventId,
+          outputPath: retainedEventOutputs.outputPath,
+          valueBytes,
+        })
+        .from(retainedEventOutputs)
+        .where(
+          and(
+            inArray(
+              retainedEventOutputs.eventId,
+              eventIds.slice(
+                start,
+                start + RETAINED_EVENT_OUTPUT_LOOKUP_BATCH_SIZE,
+              ),
+            ),
+            gt(retainedEventOutputs.expiresAt, now),
+          ),
+        )
+        .all(),
+    );
+  }
+  return sizes;
+}
+
+function retainedOutputSizeTotal(
+  sizes: readonly RetainedEventOutputSizeRow[],
+  rowCountsByEventId: ReadonlyMap<string, number>,
+): number {
+  return sizes.reduce(
+    (total, size) =>
+      total + size.valueBytes * (rowCountsByEventId.get(size.eventId) ?? 0),
+    0,
+  );
+}
+
+function hydratedEventDataBaseBytes(
+  data: string,
+  outputPath: RetainedEventOutputPath,
+): number {
+  const payload: unknown = JSON.parse(data);
+  if (!isJsonObject(payload) || !isJsonObject(payload.item)) {
+    throw new Error("Retained output event payload is not an item object");
+  }
+  payload.item[outputPath] = "";
+  removeOutputTruncation(payload.item, outputPath);
+  return Buffer.byteLength(JSON.stringify(payload)) - 2;
+}
+
+function projectedHydratedDataBytes<TRow extends HydratableStoredEventRow>(
+  rows: readonly TRow[],
+  sizes: readonly RetainedEventOutputSizeRow[],
+): number {
+  const sizesByEventId = new Map(
+    sizes.map((size) => [size.eventId, size]),
+  );
+  return rows.reduce((total, row) => {
+    const size = sizesByEventId.get(row.id);
+    if (!size) {
+      return total + Buffer.byteLength(row.data);
+    }
+    return (
+      total +
+      hydratedEventDataBaseBytes(row.data, size.outputPath) +
+      size.valueBytes
+    );
+  }, 0);
+}
+
+export function hydrateRetainedEventOutputRowsWithinDataByteLimit<
+  TRow extends HydratableStoredEventRow,
+>(
+  db: DbQueryConnection,
+  rows: readonly TRow[],
+  maxDataBytes: number,
+  now: number = Date.now(),
+): TRow[] {
+  if (rows.length === 0) {
+    return [];
+  }
+  const storedDataBytes = rows.reduce(
+    (total, row) => total + Buffer.byteLength(row.data),
+    0,
+  );
+  if (storedDataBytes > maxDataBytes) {
+    return [...rows];
+  }
+  const rowCountsByEventId = new Map<string, number>();
+  for (const row of rows) {
+    rowCountsByEventId.set(
+      row.id,
+      (rowCountsByEventId.get(row.id) ?? 0) + 1,
+    );
+  }
+  const eventIds = [...rowCountsByEventId.keys()];
+  const rawSizes = listRetainedEventOutputSizes(db, eventIds, now, false);
+  if (rawSizes.length === 0) {
+    return [...rows];
+  }
+  if (
+    retainedOutputSizeTotal(rawSizes, rowCountsByEventId) > maxDataBytes
+  ) {
+    return [...rows];
+  }
+  const escapedSizes = listRetainedEventOutputSizes(db, eventIds, now, true);
+  if (projectedHydratedDataBytes(rows, escapedSizes) > maxDataBytes) {
+    return [...rows];
+  }
+  return hydrateRetainedEventOutputRows(db, rows, now);
 }
 
 export function deleteExpiredRetainedEventOutputs(

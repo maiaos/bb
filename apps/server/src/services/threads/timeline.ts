@@ -29,6 +29,7 @@ import {
   findTimelineWindowBudgetFloorSequence,
   getStoredEventRowsByParentToolCallIdsDataBytes,
   hydrateRetainedEventOutputRows,
+  hydrateRetainedEventOutputRowsWithinDataByteLimit,
   getEnvironment,
   getThreadConversationOutlineRecord,
   findUnfinishedTurnCoveringSequence,
@@ -253,6 +254,53 @@ export function toThreadEventWithMeta(
       createdAt: row.createdAt,
     },
   };
+}
+
+function retainedOutputOriginalLengthsByCallId(
+  events: readonly ThreadEventWithMeta[],
+): ReadonlyMap<string, number> {
+  const originalLengths = new Map<string, number>();
+  for (const { event } of events) {
+    if (event.type !== "item/completed") {
+      continue;
+    }
+    const item = event.item;
+    if (item.type !== "commandExecution" && item.type !== "toolCall") {
+      continue;
+    }
+    const originalLength =
+      item.type === "commandExecution"
+        ? item.truncation?.aggregatedOutput?.originalLength
+        : item.truncation?.result?.originalLength;
+    if (originalLength !== undefined) {
+      originalLengths.set(item.id, originalLength);
+    } else {
+      originalLengths.delete(item.id);
+    }
+  }
+  return originalLengths;
+}
+
+function applyRetainedOutputOriginalLengths(
+  rows: readonly TimelineRow[],
+  events: readonly ThreadEventWithMeta[],
+): TimelineRow[] {
+  const originalLengths = retainedOutputOriginalLengthsByCallId(events);
+  if (originalLengths.size === 0) {
+    return [...rows];
+  }
+  return rows.map((row) => {
+    if (
+      row.kind !== "work" ||
+      (row.workKind !== "command" && row.workKind !== "tool")
+    ) {
+      return row;
+    }
+    const totalChars = originalLengths.get(row.callId);
+    return totalChars === undefined
+      ? row
+      : { ...row, outputPreview: { totalChars } };
+  });
 }
 
 function parseAcceptedInputClientRequestId(
@@ -1531,9 +1579,9 @@ function buildThreadTimelineInternal(
         },
       }),
   );
-  const projectedTimelineRows = buildSequencePageTimelineRows(
-    timeline.rows,
-    eventSelection,
+  const projectedTimelineRows = applyRetainedOutputOriginalLengths(
+    buildSequencePageTimelineRows(timeline.rows, eventSelection),
+    decodedRawEvents,
   );
   if (profile) {
     profile.projectedRowCount = projectedTimelineRows.length;
@@ -1925,7 +1973,11 @@ export function buildTimelineTurnSummaryDetails(
     });
   const hydratedEventRows =
     detailsInlineOutputLimit === null
-      ? hydrateRetainedEventOutputRows(db, eventRowsWithBackgroundTaskState)
+      ? hydrateRetainedEventOutputRowsWithinDataByteLimit(
+          db,
+          eventRowsWithBackgroundTaskState,
+          THREAD_TIMELINE_EVENT_DATA_BYTE_LIMIT,
+        )
       : eventRowsWithBackgroundTaskState;
   const projectionEventRows =
     byteLengthOfStoredEventRows(hydratedEventRows) <=
@@ -1939,8 +1991,11 @@ export function buildTimelineTurnSummaryDetails(
         : sourceSeqStart,
     sourceRange.sourceSeqStart,
   );
+  const projectionEvents = projectionEventRows.map((row) =>
+    toThreadEventWithMeta(row),
+  );
   const children = buildThreadTimelineTurnDetailsFromEvents({
-    events: projectionEventRows.map((row) => toThreadEventWithMeta(row)),
+    events: projectionEvents,
     options: {
       includeProviderUnhandledOperations,
       sourceSeqEnd: sourceRange.sourceSeqEnd,
@@ -1954,7 +2009,7 @@ export function buildTimelineTurnSummaryDetails(
 
   if (children.kind !== "missing-match") {
     return {
-      rows: children.rows,
+      rows: applyRetainedOutputOriginalLengths(children.rows, projectionEvents),
     };
   }
 

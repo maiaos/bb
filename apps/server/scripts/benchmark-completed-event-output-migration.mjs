@@ -20,7 +20,10 @@ const DEFAULT_OUTPUT_CHARS = 36 * 1024;
 const DEFAULT_WARMUPS = 2;
 const DEFAULT_ITERATIONS = 10;
 const DEFAULT_DRAIN_ROWS_PER_TARGET = 1_000;
+const DEFAULT_LARGE_OUTPUT_CHARS = 4 * 1024 * 1024;
 const DEFAULT_SCAN_LIMIT = 250;
+const PRODUCTION_MIGRATION_MAX_ADVANCES_PER_SWEEP = 64;
+const PRODUCTION_SWEEP_CADENCE_MS = 10_000;
 
 function parsePositiveInteger(value, name) {
   const parsed = Number(value);
@@ -60,6 +63,10 @@ function parseArgs(argv) {
     iterations: parsePositiveInteger(
       values.get("iterations") ?? String(DEFAULT_ITERATIONS),
       "iterations",
+    ),
+    largeOutputChars: parsePositiveInteger(
+      values.get("large-output-chars") ?? String(DEFAULT_LARGE_OUTPUT_CHARS),
+      "large-output-chars",
     ),
     load,
     output,
@@ -371,6 +378,7 @@ function migrationResult(mode, result, outputChars) {
 }
 
 async function measureAdvance(args) {
+  const advanceStartedAt = performance.now();
   const countersBefore = readCounterSnapshot(args.counters);
   const timerStartedAt = performance.now();
   const timerDelay = new Promise((resolveTimer) => {
@@ -387,6 +395,7 @@ async function measureAdvance(args) {
     ...migrationResult(args.mode, rawResult, args.outputChars),
     synchronousMs,
     timerDelayMs,
+    wallMs: performance.now() - advanceStartedAt,
     yields: 1,
   };
 }
@@ -573,7 +582,32 @@ function summarizeSamples(samples) {
     synchronousMs: summarize(samples.map((sample) => sample.synchronousMs)),
     ticks: samples.length,
     timerDelayMs: summarize(samples.map((sample) => sample.timerDelayMs)),
+    wallMs: summarize(samples.map((sample) => sample.wallMs)),
     yields: samples.reduce((sum, sample) => sum + sample.yields, 0),
+  };
+}
+
+function productionScheduleProjection(mode, samples) {
+  const advancesPerSweep =
+    mode === "before" ? 1 : PRODUCTION_MIGRATION_MAX_ADVANCES_PER_SWEEP;
+  const sweepCount = Math.ceil(samples.length / advancesPerSweep);
+  const lastSweepStart = Math.max(0, (sweepCount - 1) * advancesPerSweep);
+  const lastSweepActiveWallMs = samples
+    .slice(lastSweepStart)
+    .reduce((total, sample) => total + sample.wallMs, 0);
+  const cadenceWaitFromFirstSweepMs =
+    Math.max(0, sweepCount - 1) * PRODUCTION_SWEEP_CADENCE_MS;
+  const projectedFromFirstSweepMs =
+    cadenceWaitFromFirstSweepMs + lastSweepActiveWallMs;
+  return {
+    advancesPerSweep,
+    cadenceMs: PRODUCTION_SWEEP_CADENCE_MS,
+    cadenceWaitFromFirstSweepMs,
+    lastSweepActiveWallMs,
+    projectedFromFirstSweepMs,
+    projectedFromStartupMs:
+      PRODUCTION_SWEEP_CADENCE_MS + projectedFromFirstSweepMs,
+    sweepCount,
   };
 }
 
@@ -635,6 +669,16 @@ async function main() {
       });
       rmSync(root, { recursive: true });
     }
+    for (let index = 0; index < args.warmups; index += 1) {
+      const root = join(benchmarkRoot, `large-output-warmup-${index}`);
+      mkdirSync(root);
+      await runDrain(api, mode, root, {
+        outputChars: args.largeOutputChars,
+        rowsPerTarget: 1,
+        scanLimit: args.scanLimit,
+      });
+      rmSync(root, { recursive: true });
+    }
     const occupancyRuns = [];
     const occupancySamples = [];
     for (let index = 0; index < args.iterations; index += 1) {
@@ -651,6 +695,24 @@ async function main() {
         wallMs: run.wallMs,
       });
       occupancySamples.push(...run.samples);
+      rmSync(root, { recursive: true });
+    }
+    const largeOutputRuns = [];
+    const largeOutputSamples = [];
+    for (let index = 0; index < args.iterations; index += 1) {
+      const root = join(benchmarkRoot, `large-output-iteration-${index}`);
+      mkdirSync(root);
+      const run = await runDrain(api, mode, root, {
+        outputChars: args.largeOutputChars,
+        rowsPerTarget: 1,
+        scanLimit: args.scanLimit,
+      });
+      largeOutputRuns.push({
+        migratedBytes: run.migratedBytes,
+        migratedRows: run.migratedRows,
+        wallMs: run.wallMs,
+      });
+      largeOutputSamples.push(...run.samples);
       rmSync(root, { recursive: true });
     }
     const drainRoot = join(benchmarkRoot, "drain");
@@ -683,6 +745,7 @@ async function main() {
           args.drainRowsPerTarget * api.targets.length * args.outputChars,
         drainTotalRows: args.drainRowsPerTarget * api.targets.length,
         itemPaths: api.targets,
+        largeOutputChars: args.largeOutputChars,
         outputChars: args.outputChars,
         scanLimit: args.scanLimit,
       },
@@ -692,6 +755,7 @@ async function main() {
         migratedBytes: drain.migratedBytes,
         migratedRows: drain.migratedRows,
         samples: drain.samples,
+        productionSchedule: productionScheduleProjection(mode, drain.samples),
         summary: summarizeSamples(drain.samples),
         wallMs: drain.wallMs,
       },
@@ -707,6 +771,14 @@ async function main() {
         .update(readFileSync(scriptPath))
         .digest("hex"),
       iterations: args.iterations,
+      largeOutput: {
+        outputChars: args.largeOutputChars,
+        rowsPerTarget: 1,
+        runs: largeOutputRuns,
+        samples: largeOutputSamples,
+        summary: summarizeSamples(largeOutputSamples),
+        wallMs: summarize(largeOutputRuns.map((run) => run.wallMs)),
+      },
       load: args.load,
       mode,
       node: process.version,

@@ -32,7 +32,6 @@ import {
   seedHostSession,
   seedProjectWithSource,
   seedQueuedMessage,
-  seedEvent,
   seedThread,
   seedThreadFixture,
   seedThreadRuntimeState,
@@ -98,54 +97,73 @@ function releaseRunningJob(release: ReleaseCallback | null): void {
 }
 
 describe("runPeriodicSweeps", () => {
-  it("deletes one expired retained output without changing its event preview", async () => {
+  it("deletes expired retained outputs across yielded advances without changing previews", async () => {
     const now = Date.now();
     await withTestHarness(async (harness) => {
       const { environment, thread } = seedThreadFixture(harness);
-      seedEvent(harness.deps, {
-        createdAt: now - COMPLETED_EVENT_OUTPUT_RETENTION_MS - 1,
-        data: {
-          item: {
-            aggregatedOutput: "x".repeat(50_000),
-            approvalStatus: null,
-            command: "cat expired",
-            cwd: "/tmp",
-            exitCode: 0,
-            id: "expired-retained-command",
-            status: "completed",
-            type: "commandExecution",
+      for (const sequence of [1, 2]) {
+        seedEvent(harness.deps, {
+          createdAt: now - COMPLETED_EVENT_OUTPUT_RETENTION_MS - sequence,
+          data: {
+            item: {
+              aggregatedOutput: `${sequence}-${"x".repeat(50_000)}`,
+              approvalStatus: null,
+              command: "cat expired",
+              cwd: "/tmp",
+              exitCode: 0,
+              id: `expired-retained-command-${sequence}`,
+              status: "completed",
+              type: "commandExecution",
+            },
           },
-        },
-        environmentId: environment.id,
-        providerThreadId: "provider-expired-retained",
-        scope: { kind: "turn", turnId: "turn-expired-retained" },
-        sequence: 1,
-        threadId: thread.id,
-        type: "item/completed",
-      });
-      const preview = harness.db
-        .select({ data: events.data })
+          environmentId: environment.id,
+          providerThreadId: "provider-expired-retained",
+          scope: { kind: "turn", turnId: "turn-expired-retained" },
+          sequence,
+          threadId: thread.id,
+          type: "item/completed",
+        });
+      }
+      const previews = harness.db
+        .select({ data: events.data, id: events.id })
         .from(events)
         .where(eq(events.threadId, thread.id))
-        .get();
+        .all();
       expect(harness.db.select().from(retainedEventOutputs).all()).toHaveLength(
-        1,
+        2,
       );
+      const observedSidecarCounts: number[] = [];
+      let sweepSettled = false;
+      const probe = () => {
+        if (sweepSettled) {
+          return;
+        }
+        observedSidecarCounts.push(
+          harness.db.select().from(retainedEventOutputs).all().length,
+        );
+        setImmediate(probe);
+      };
+      setImmediate(probe);
 
-      await runPeriodicSweeps({
-        ...harness.deps,
-        pluginSchedules: harness.pluginService,
-        plugins: harness.pluginService,
-      });
+      try {
+        await runPeriodicSweeps({
+          ...harness.deps,
+          pluginSchedules: harness.pluginService,
+          plugins: harness.pluginService,
+        });
+      } finally {
+        sweepSettled = true;
+      }
 
       expect(harness.db.select().from(retainedEventOutputs).all()).toEqual([]);
+      expect(observedSidecarCounts).toContain(1);
       expect(
         harness.db
-          .select({ data: events.data })
+          .select({ data: events.data, id: events.id })
           .from(events)
           .where(eq(events.threadId, thread.id))
-          .get(),
-      ).toEqual(preview);
+          .all(),
+      ).toEqual(previews);
     });
   });
 
@@ -224,7 +242,7 @@ describe("runPeriodicSweeps", () => {
         changes.filter((threadChanges) =>
           threadChanges.includes("history-rewritten"),
         ),
-      ).toHaveLength(2);
+      ).toHaveLength(1);
     });
   });
 

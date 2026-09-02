@@ -11,6 +11,7 @@ import { createProject } from "../../src/data/projects.js";
 import {
   deleteExpiredRetainedEventOutputs,
   hydrateRetainedEventOutputRows,
+  hydrateRetainedEventOutputRowsWithinDataByteLimit,
 } from "../../src/data/retained-event-outputs.js";
 import {
   COMPLETED_EVENT_OUTPUT_RETAINED_HEAD_CHARS,
@@ -129,6 +130,110 @@ describe("retained completed-event outputs", () => {
       now + COMPLETED_EVENT_OUTPUT_RETENTION_MS,
     );
     expect(expired?.data).toBe(stored.data);
+    db.$client.close();
+  });
+
+  it("hydrates retained outputs only when they fit the data byte budget", () => {
+    const now = 1_800_000_000_000;
+    const { db, source } = setup();
+    const output = "bounded-" + "b".repeat(5 * 1024 * 1024);
+    insertEvents(db, noopNotifier, [
+      {
+        createdAt: now,
+        data: JSON.stringify({
+          item: {
+            aggregatedOutput: output,
+            id: "bounded-command",
+            type: "commandExecution",
+          },
+        }),
+        itemId: "bounded-command",
+        itemKind: "commandExecution",
+        parentToolCallId: null,
+        scope: turnScope("turn-bounded"),
+        sequence: 1,
+        threadId: source.id,
+        type: "item/completed",
+      },
+    ]);
+    const stored = listStoredEventRows(db, { threadId: source.id });
+
+    expect(
+      hydrateRetainedEventOutputRowsWithinDataByteLimit(
+        db,
+        stored,
+        4 * 1024 * 1024,
+        now,
+      ),
+    ).toEqual(stored);
+    const [hydrated] = hydrateRetainedEventOutputRowsWithinDataByteLimit(
+      db,
+      stored,
+      8 * 1024 * 1024,
+      now,
+    );
+    expect(hydrated && readOutput(hydrated.data, "aggregatedOutput")).toBe(
+      output,
+    );
+
+    const exactHydratedRows = hydrateRetainedEventOutputRows(db, stored, now);
+    const exactHydratedBytes = exactHydratedRows.reduce(
+      (total, row) => total + Buffer.byteLength(row.data),
+      0,
+    );
+    expect(
+      hydrateRetainedEventOutputRowsWithinDataByteLimit(
+        db,
+        stored,
+        exactHydratedBytes,
+        now,
+      ),
+    ).toEqual(exactHydratedRows);
+    expect(
+      hydrateRetainedEventOutputRowsWithinDataByteLimit(
+        db,
+        stored,
+        exactHydratedBytes - 1,
+        now,
+      ),
+    ).toEqual(stored);
+    db.$client.close();
+  });
+
+  it("rolls back the event when its retained output cannot be inserted", () => {
+    const now = 1_800_000_000_000;
+    const { db, source } = setup();
+    const output = "atomic-" + "a".repeat(50_000);
+    db.$client.exec(`
+      CREATE TRIGGER fail_retained_output_insert
+      BEFORE INSERT ON retained_event_outputs
+      BEGIN
+        SELECT RAISE(ABORT, 'forced retained output failure');
+      END
+    `);
+
+    expect(() =>
+      insertEvents(db, noopNotifier, [
+        {
+          createdAt: now,
+          data: JSON.stringify({
+            item: {
+              aggregatedOutput: output,
+              id: "atomic-command",
+              type: "commandExecution",
+            },
+          }),
+          itemId: "atomic-command",
+          itemKind: "commandExecution",
+          parentToolCallId: null,
+          scope: turnScope("turn-atomic"),
+          sequence: 1,
+          threadId: source.id,
+          type: "item/completed",
+        },
+      ]),
+    ).toThrow("forced retained output failure");
+    expect(listStoredEventRows(db, { threadId: source.id })).toEqual([]);
     db.$client.close();
   });
 

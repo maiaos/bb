@@ -438,4 +438,60 @@ describe("GET /threads/:id/timeline retained output details", () => {
       expect(row.outputPreview).toBeUndefined();
     });
   });
+
+  it("keeps an oversized retained output as a preview in details", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedThreadFixture(harness);
+      const turn = {
+        environmentId: environment.id,
+        providerThreadId: "provider-oversized-retained-details",
+        scope: turnScope("turn-oversized-retained-details"),
+        threadId: thread.id,
+      } as const;
+      const output = "oversized-" + "o".repeat(5 * 1024 * 1024);
+      seedEvent(harness.deps, {
+        ...turn,
+        data: {},
+        sequence: 1,
+        type: "turn/started",
+      });
+      seedEvent(harness.deps, {
+        ...turn,
+        data: {
+          item: {
+            aggregatedOutput: output,
+            approvalStatus: null,
+            command: "cat oversized retained details",
+            cwd: "/tmp",
+            exitCode: 0,
+            id: "oversized-retained-details-command",
+            status: "completed",
+            type: "commandExecution",
+          },
+        },
+        sequence: 2,
+        type: "item/completed",
+      });
+
+      const response = await harness.app.request(
+        `/api/v1/threads/${thread.id}/timeline/turn-summary-details?turnId=turn-oversized-retained-details&sourceSeqStart=2&sourceSeqEnd=2`,
+      );
+      expect(response.status).toBe(200);
+      const details = timelineTurnSummaryDetailsResponseSchema.parse(
+        await readJson(response),
+      );
+      const row = details.rows.find(
+        (candidate) =>
+          candidate.kind === "work" && candidate.workKind === "command",
+      );
+      if (row?.kind !== "work" || row.workKind !== "command") {
+        throw new Error("Expected oversized retained details command row");
+      }
+      expect(row.output).not.toBe(output);
+      expect(row.output.startsWith(output.slice(0, 2_048))).toBe(true);
+      expect(row.output.endsWith(output.slice(-2_048))).toBe(true);
+      expect(row.output).toContain("output truncated by retention policy");
+      expect(row.outputPreview).toEqual({ totalChars: output.length });
+    });
+  });
 });

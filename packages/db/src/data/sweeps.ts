@@ -1,23 +1,31 @@
 import { eq, and, sql, lt, asc } from "drizzle-orm";
 import type { DbConnection, DbQueryConnection } from "../connection.js";
 import type { DbNotifier } from "../notifier.js";
+import {
+  COMPLETED_EVENT_OUTPUT_TRUNCATION_THRESHOLD_CHARS,
+  type RetainedEventOutputTarget,
+} from "../retained-event-output.js";
 import { environments, events, maintenanceScanCursors } from "../schema.js";
 import {
   insertPreparedRetainedEventOutput,
   prepareCompletedEventOutputData,
-  type RetainedEventOutputTarget,
 } from "./retained-event-outputs.js";
+
+export {
+  COMPLETED_EVENT_OUTPUT_RETAINED_HEAD_CHARS,
+  COMPLETED_EVENT_OUTPUT_RETAINED_TAIL_CHARS,
+  COMPLETED_EVENT_OUTPUT_RETENTION_MS,
+  COMPLETED_EVENT_OUTPUT_TRUNCATION_THRESHOLD_CHARS,
+} from "../retained-event-output.js";
 
 export const DESTROYED_ENVIRONMENT_TTL_MS = 7 * 24 * 60 * 60_000;
 
 export const CLOSED_SESSION_ROW_RETENTION_MS = 7 * 24 * 60 * 60_000;
 
-export const COMPLETED_EVENT_OUTPUT_RETENTION_MS = 7 * 24 * 60 * 60_000;
-
-export const COMPLETED_EVENT_OUTPUT_TRUNCATION_THRESHOLD_CHARS = 32 * 1024;
-export const COMPLETED_EVENT_OUTPUT_RETAINED_HEAD_CHARS = 2 * 1024;
-export const COMPLETED_EVENT_OUTPUT_RETAINED_TAIL_CHARS = 2 * 1024;
 const COMPLETED_EVENT_OUTPUT_MIGRATION_CURSOR_VERSION = 1;
+const COMPLETED_EVENT_OUTPUT_MIGRATION_COMPLETED_AT = -1;
+const COMPLETED_EVENT_OUTPUT_MIGRATION_RESCAN_INTERVAL_MS =
+  24 * 60 * 60 * 1_000;
 export const DEFAULT_CLOSED_SESSION_PRUNE_BATCH_SIZE = 1_000;
 export const DEFAULT_DESTROYED_ENVIRONMENT_EVENT_DETACH_BATCH_SIZE = 50;
 export const DEFAULT_COMPLETED_EVENT_OUTPUT_MIGRATION_SCAN_LIMIT = 250;
@@ -55,6 +63,7 @@ type CompletedEventOutputCandidateParameters = [
 interface CompletedEventOutputScanCursor {
   lastCreatedAt: number;
   lastEventId: string;
+  updatedAt: number;
 }
 
 interface CompletedEventOutputScanRow {
@@ -70,7 +79,9 @@ interface CompletedEventOutputCandidateRow {
 }
 
 interface AdvanceCompletedEventOutputMigrationCursorArgs
-  extends RetainedEventOutputTarget, CompletedEventOutputScanCursor {
+  extends RetainedEventOutputTarget {
+  lastCreatedAt: number;
+  lastEventId: string;
   updatedAt: number;
 }
 
@@ -100,7 +111,7 @@ export interface MigrateNextCompletedEventItemOutputArgs extends RetainedEventOu
 }
 
 export interface MigrateNextCompletedEventItemOutputResult {
-  action: "idle" | "migrated" | "scanned" | "wrapped";
+  action: "complete" | "idle" | "migrated" | "scanned" | "wrapped";
   eventId: string | null;
   migratedBytes: number;
   migratedRows: number;
@@ -152,6 +163,7 @@ function getCompletedEventOutputScanCursor(
     .select({
       lastCreatedAt: maintenanceScanCursors.lastCreatedAt,
       lastEventId: maintenanceScanCursors.lastEventId,
+      updatedAt: maintenanceScanCursors.updatedAt,
     })
     .from(maintenanceScanCursors)
     .where(
@@ -159,7 +171,7 @@ function getCompletedEventOutputScanCursor(
     )
     .get();
 
-  return row ?? { lastCreatedAt: 0, lastEventId: "" };
+  return row ?? { lastCreatedAt: 0, lastEventId: "", updatedAt: 0 };
 }
 
 function listCompletedEventOutputScanRows(
@@ -227,7 +239,7 @@ function findCompletedEventOutputCandidate(
             json_type(data, ?) = 'text'
             AND json_type(data, ?) IS NULL
             AND json_extract(data, ?) = ?
-            AND length(json_extract(data, ?)) > ?
+            AND octet_length(json_extract(data, ?)) > ?
           ELSE 0 END
         ORDER BY created_at, id
         LIMIT 1
@@ -277,7 +289,7 @@ function advanceCompletedEventOutputMigrationCursor(
 }
 
 function emptyCompletedEventOutputMigrationResult(
-  action: "idle" | "scanned" | "wrapped",
+  action: "complete" | "idle" | "scanned" | "wrapped",
   scanRows: number,
 ): MigrateNextCompletedEventItemOutputResult {
   return {
@@ -299,10 +311,12 @@ export function migrateNextCompletedEventItemOutput(
     return emptyCompletedEventOutputMigrationResult("idle", 0);
   }
   const cursor = getCompletedEventOutputScanCursor(db, args);
-  const rows = listCompletedEventOutputScanRows(db, args, cursor);
-  if (rows.length === 0) {
-    if (cursor.lastCreatedAt === 0 && cursor.lastEventId === "") {
-      return emptyCompletedEventOutputMigrationResult("idle", 0);
+  if (cursor.lastCreatedAt === COMPLETED_EVENT_OUTPUT_MIGRATION_COMPLETED_AT) {
+    if (
+      args.migratedAt - cursor.updatedAt <
+      COMPLETED_EVENT_OUTPUT_MIGRATION_RESCAN_INTERVAL_MS
+    ) {
+      return emptyCompletedEventOutputMigrationResult("complete", 0);
     }
     advanceCompletedEventOutputMigrationCursor(db, {
       ...args,
@@ -311,6 +325,19 @@ export function migrateNextCompletedEventItemOutput(
       updatedAt: args.migratedAt,
     });
     return emptyCompletedEventOutputMigrationResult("wrapped", 0);
+  }
+  const rows = listCompletedEventOutputScanRows(db, args, cursor);
+  if (rows.length === 0) {
+    if (cursor.lastCreatedAt === 0 && cursor.lastEventId === "") {
+      return emptyCompletedEventOutputMigrationResult("idle", 0);
+    }
+    advanceCompletedEventOutputMigrationCursor(db, {
+      ...args,
+      lastCreatedAt: COMPLETED_EVENT_OUTPUT_MIGRATION_COMPLETED_AT,
+      lastEventId: "",
+      updatedAt: args.migratedAt,
+    });
+    return emptyCompletedEventOutputMigrationResult("complete", 0);
   }
 
   const candidate = findCompletedEventOutputCandidate(db, args, rows);
@@ -335,7 +362,13 @@ export function migrateNextCompletedEventItemOutput(
     type: "item/completed",
   });
   if (!prepared.retainedOutput) {
-    throw new Error("Completed output migration candidate was not eligible");
+    advanceCompletedEventOutputMigrationCursor(db, {
+      ...args,
+      lastCreatedAt: candidate.created_at,
+      lastEventId: candidate.id,
+      updatedAt: args.migratedAt,
+    });
+    return emptyCompletedEventOutputMigrationResult("scanned", rows.length);
   }
   const retainedOutput = prepared.retainedOutput;
   const retained = retainedOutput.expiresAt > args.migratedAt;
