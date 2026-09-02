@@ -482,7 +482,10 @@ function rowPlugin(
     provenance: "direct" as const,
     isOrphanedBuiltin: false,
     catalogEntryId: null,
+    catalogMarketplaceName: null,
     publisherLabel: null,
+    categoryId: null,
+    category: null,
     sourceDisplay: "path · /plugins/linear",
     updateState: EMPTY_PLUGIN_UPDATE_STATE,
   };

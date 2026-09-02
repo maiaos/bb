@@ -375,12 +375,14 @@ describe("PluginsOverview", () => {
     ).toBeTruthy();
     fireEvent.pointerDown(state);
     expect(
-      screen.getByRole("menuitemcheckbox", { name: "Enabled" }).textContent,
+      screen.getByRole("menuitemcheckbox", { name: "Enabled, 1 plugin" })
+        .textContent,
     ).toContain("1");
     fireEvent.keyDown(document, { key: "Escape" });
     fireEvent.pointerDown(source);
     expect(
-      screen.getByRole("menuitemcheckbox", { name: "BB Official" }).textContent,
+      screen.getByRole("menuitemcheckbox", { name: "BB Official, 1 plugin" })
+        .textContent,
     ).toContain("1");
     fireEvent.keyDown(document, { key: "Escape" });
     fireEvent.click(
@@ -548,8 +550,10 @@ describe("PluginsOverview", () => {
       screen.getByRole("textbox", { name: "Search installed plugins" }),
       { target: { value: "Plugin 01" } },
     );
-    expect(screen.getByText("Plugin 01")).toBeTruthy();
-    expect(screen.queryByText("Plugin 12")).toBeNull();
+    await waitFor(() => {
+      expect(screen.getByText("Plugin 01")).toBeTruthy();
+      expect(screen.queryByText("Plugin 12")).toBeNull();
+    });
   });
 
   it("fits the first chunk to the viewport and keeps the list panel unstretched", async () => {
@@ -771,12 +775,14 @@ describe("PluginsOverview", () => {
     await screen.findByText("Running");
     fireEvent.pointerDown(screen.getByRole("button", { name: "State" }));
     fireEvent.click(
-      screen.getByRole("menuitemcheckbox", { name: "Not running" }),
+      screen.getByRole("menuitemcheckbox", { name: "Not running, 1 plugin" }),
     );
     await waitFor(() =>
       expect(installedRowIds()).toEqual(["plugin-row-broken"]),
     );
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Disabled" }));
+    fireEvent.click(
+      screen.getByRole("menuitemcheckbox", { name: "Disabled, 1 plugin" }),
+    );
     await waitFor(() =>
       expect(installedRowIds()).toEqual([
         "plugin-row-broken",
@@ -784,11 +790,15 @@ describe("PluginsOverview", () => {
       ]),
     );
     fireEvent.click(
-      screen.getByRole("menuitemcheckbox", { name: "Not running" }),
+      screen.getByRole("menuitemcheckbox", { name: "Not running, 1 plugin" }),
     );
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Disabled" }));
     fireEvent.click(
-      screen.getByRole("menuitemcheckbox", { name: "Update available" }),
+      screen.getByRole("menuitemcheckbox", { name: "Disabled, 1 plugin" }),
+    );
+    fireEvent.click(
+      screen.getByRole("menuitemcheckbox", {
+        name: "Update available, 1 plugin",
+      }),
     );
     await waitFor(() =>
       expect(installedRowIds()).toEqual(["plugin-row-update"]),
@@ -862,18 +872,26 @@ describe("PluginsOverview", () => {
 
     await screen.findByText("Path");
     fireEvent.pointerDown(screen.getByRole("button", { name: "Source" }));
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Git" }));
+    fireEvent.click(
+      screen.getByRole("menuitemcheckbox", { name: "Git, 2 plugins" }),
+    );
     await waitFor(() =>
       expect(installedRowIds()).toEqual([
         "plugin-row-direct-url",
         "plugin-row-git",
       ]),
     );
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Git" }));
     fireEvent.click(
-      screen.getByRole("menuitemcheckbox", { name: "Acme Plugins" }),
+      screen.getByRole("menuitemcheckbox", { name: "Git, 2 plugins" }),
     );
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Path" }));
+    fireEvent.click(
+      screen.getByRole("menuitemcheckbox", {
+        name: "Acme Plugins, 1 plugin",
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("menuitemcheckbox", { name: "Path, 1 plugin" }),
+    );
     await waitFor(() =>
       expect(installedRowIds()).toEqual(["plugin-row-acme", "plugin-row-path"]),
     );
@@ -950,11 +968,15 @@ describe("PluginsOverview", () => {
 
     await screen.findByText("Secure Notes");
     fireEvent.pointerDown(screen.getByRole("button", { name: "State" }));
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Disabled" }));
+    fireEvent.click(
+      screen.getByRole("menuitemcheckbox", { name: "Disabled, 4 plugins" }),
+    );
     fireEvent.keyDown(document, { key: "Escape" });
     fireEvent.pointerDown(screen.getByRole("button", { name: "Source" }));
     fireEvent.click(
-      screen.getByRole("menuitemcheckbox", { name: "BB Community" }),
+      screen.getByRole("menuitemcheckbox", {
+        name: "BB Community, 4 plugins",
+      }),
     );
     fireEvent.keyDown(document, { key: "Escape" });
     fireEvent.click(
@@ -1025,15 +1047,25 @@ describe("PluginsOverview", () => {
       name: "Search installed plugins",
     });
     fireEvent.change(search, { target: { value: "Name Match" } });
-    expect(installedRowIds()).toEqual(["plugin-row-alpha"]);
+    await waitFor(() =>
+      expect(installedRowIds()).toEqual(["plugin-row-alpha"]),
+    );
     fireEvent.change(search, { target: { value: "id-match" } });
-    expect(installedRowIds()).toEqual(["plugin-row-id-match"]);
+    await waitFor(() =>
+      expect(installedRowIds()).toEqual(["plugin-row-id-match"]),
+    );
     fireEvent.change(search, { target: { value: "Description Match" } });
-    expect(installedRowIds()).toEqual(["plugin-row-third"]);
+    await waitFor(() =>
+      expect(installedRowIds()).toEqual(["plugin-row-third"]),
+    );
     fireEvent.change(search, { target: { value: "9.8.7" } });
-    expect(installedRowIds()).toEqual(["plugin-row-version-match"]);
+    await waitFor(() =>
+      expect(installedRowIds()).toEqual(["plugin-row-version-match"]),
+    );
     fireEvent.change(search, { target: { value: "Acme source" } });
-    expect(installedRowIds()).toEqual(["plugin-row-source-match"]);
+    await waitFor(() =>
+      expect(installedRowIds()).toEqual(["plugin-row-source-match"]),
+    );
   });
 
   it("keeps rapid Installed search input and writes the complete URL", async () => {
@@ -1116,7 +1148,7 @@ describe("PluginsOverview", () => {
     render(
       <MemoryRouter
         initialEntries={[
-          "/extensions/plugins?view=installed&query=absent&state=disabled&source=path&category=__uncategorized__",
+          "/extensions/plugins?view=installed&query=absent&state=disabled&source=path&category=uncategorized",
         ]}
       >
         <QueryClientWrapper>

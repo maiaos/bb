@@ -1,8 +1,7 @@
-import { PLUGIN_CATALOG_CATEGORIES, pluginCatalogCategory } from "@bb/domain";
 import type { PluginListItem } from "@/hooks/queries/plugin-settings-queries";
 import { pluginNeedsAttention } from "@/hooks/usePluginAttention";
-
-export const UNCATEGORIZED_INSTALLED_FILTER = "__uncategorized__";
+import { UNCATEGORIZED_PLUGIN_CATEGORY_ID } from "./plugin-browse-discovery";
+import { pluginCategoryFilterOptions } from "./plugin-category-options";
 
 export const INSTALLED_STATE_FILTERS = [
   "enabled",
@@ -103,7 +102,7 @@ export function installedPluginSourceFilter(
 
 export function installedPluginCategoryFilter(plugin: PluginListItem): string {
   return plugin.categoryId == null || plugin.category == null
-    ? UNCATEGORIZED_INSTALLED_FILTER
+    ? UNCATEGORIZED_PLUGIN_CATEGORY_ID
     : plugin.categoryId;
 }
 
@@ -163,52 +162,13 @@ export function installedCategoryFacetOptions(
   plugins: readonly PluginListItem[],
   selected: readonly string[],
 ): InstalledFacetOption[] {
-  const labels = new Map<string, string>();
-  const counts = new Map<string, number>();
-  const unknownIds: string[] = [];
-  for (const plugin of plugins) {
-    const id = installedPluginCategoryFilter(plugin);
-    if (!labels.has(id)) {
-      const category = pluginCatalogCategory(id);
-      labels.set(
-        id,
-        id === UNCATEGORIZED_INSTALLED_FILTER
-          ? "Uncategorized"
-          : (category?.displayName ?? plugin.category ?? id),
-      );
-      if (id !== UNCATEGORIZED_INSTALLED_FILTER && category === undefined) {
-        unknownIds.push(id);
-      }
-    }
-    counts.set(id, (counts.get(id) ?? 0) + 1);
-  }
-  for (const id of selected) {
-    if (labels.has(id)) continue;
-    const category = pluginCatalogCategory(id);
-    labels.set(
-      id,
-      id === UNCATEGORIZED_INSTALLED_FILTER
-        ? "Uncategorized"
-        : (category?.displayName ?? id),
-    );
-    if (id !== UNCATEGORIZED_INSTALLED_FILTER && category === undefined) {
-      unknownIds.push(id);
-    }
-  }
-  const orderedIds = [
-    ...PLUGIN_CATALOG_CATEGORIES.map((category) => category.id).filter((id) =>
-      labels.has(id),
-    ),
-    ...unknownIds,
-    ...(labels.has(UNCATEGORIZED_INSTALLED_FILTER)
-      ? [UNCATEGORIZED_INSTALLED_FILTER]
-      : []),
-  ];
-  return orderedIds.map((id) => ({
-    id,
-    label: labels.get(id) ?? id,
-    count: counts.get(id) ?? 0,
-  }));
+  return pluginCategoryFilterOptions(
+    plugins.map((plugin) => ({
+      id: installedPluginCategoryFilter(plugin),
+      label: plugin.category,
+    })),
+    selected,
+  );
 }
 
 export function pluginMatchesInstalledFilters(

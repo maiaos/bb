@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { useDebounceValue } from "usehooks-ts";
 import {
   ResourceInfiniteScrollSentinel,
   useResourceInfiniteItems,
@@ -50,8 +51,6 @@ import {
 
 type PluginsCollectionMode = "installed" | "browse";
 
-const INSTALLED_QUERY_URL_DELAY_MS = 300;
-
 function modeFromSearchParams(value: string | null): PluginsCollectionMode {
   if (value === "installed") return value;
   return "browse";
@@ -85,6 +84,7 @@ function countedResourceOptions<T extends string>(
   return options.map((option) => ({
     id: option.id,
     label: option.label,
+    accessibleLabel: `${option.label}, ${option.count.toLocaleString()} ${option.count === 1 ? "plugin" : "plugins"}`,
     leading: (
       <span className="text-2xs font-medium tabular-nums text-subtle-foreground">
         {option.count.toLocaleString()}
@@ -106,10 +106,11 @@ export function PluginsOverview({
     [listQuery.data?.plugins],
   );
   const activeMode = modeFromSearchParams(searchParams.get("view"));
-  const installedQueryParam = searchParams.get("query") ?? "";
-  const [installedQuery, setInstalledQuery] = useState(installedQueryParam);
-  const installedQueryTimeoutRef = useRef<number | null>(null);
-  const installedQueryWriteRef = useRef<string | null>(null);
+  const installedQuery = searchParams.get("query") ?? "";
+  const [debouncedInstalledQuery] = useDebounceValue(
+    installedQuery.trim(),
+    300,
+  );
   const stateFilters = stateFiltersFromSearchParams(searchParams);
   const sourceFilters = sourceFiltersFromSearchParams(searchParams);
   const categoryFilters = categoryFiltersFromSearchParams(searchParams);
@@ -133,9 +134,9 @@ export function PluginsOverview({
     () => installedCategoryFacetOptions(plugins, categoryFilters),
     [categoryFilters, plugins],
   );
-  const normalizedInstalledQuery = installedQuery.trim().toLocaleLowerCase();
+  const normalizedInstalledQuery = debouncedInstalledQuery.toLocaleLowerCase();
   const hasInstalledFilters =
-    normalizedInstalledQuery !== "" ||
+    installedQuery.trim() !== "" ||
     stateFilters.length > 0 ||
     sourceFilters.length > 0 ||
     categoryFilters.length > 0;
@@ -154,45 +155,11 @@ export function PluginsOverview({
     initial: AddPluginInitial | null;
   }>({ open: false, initial: null });
 
-  useEffect(() => {
-    if (installedQueryWriteRef.current === installedQueryParam) {
-      installedQueryWriteRef.current = null;
-      return;
-    }
-    if (installedQueryTimeoutRef.current !== null) {
-      window.clearTimeout(installedQueryTimeoutRef.current);
-      installedQueryTimeoutRef.current = null;
-    }
-    setInstalledQuery(installedQueryParam);
-  }, [installedQueryParam]);
-
-  useEffect(
-    () => () => {
-      if (installedQueryTimeoutRef.current !== null) {
-        window.clearTimeout(installedQueryTimeoutRef.current);
-      }
-    },
-    [],
-  );
-
   const changeInstalledQuery = (value: string) => {
-    setInstalledQuery(value);
-    if (installedQueryTimeoutRef.current !== null) {
-      window.clearTimeout(installedQueryTimeoutRef.current);
-    }
-    installedQueryTimeoutRef.current = window.setTimeout(() => {
-      installedQueryWriteRef.current = value;
-      setSearchParams(
-        (current) => {
-          const next = new URLSearchParams(current);
-          if (value === "") next.delete("query");
-          else next.set("query", value);
-          return next;
-        },
-        { replace: true },
-      );
-      installedQueryTimeoutRef.current = null;
-    }, INSTALLED_QUERY_URL_DELAY_MS);
+    const next = new URLSearchParams(searchParams);
+    if (value === "") next.delete("query");
+    else next.set("query", value);
+    setSearchParams(next, { replace: true });
   };
 
   const changeInstalledParams = (
@@ -206,12 +173,6 @@ export function PluginsOverview({
   };
 
   const clearInstalledFilters = () => {
-    if (installedQueryTimeoutRef.current !== null) {
-      window.clearTimeout(installedQueryTimeoutRef.current);
-      installedQueryTimeoutRef.current = null;
-    }
-    installedQueryWriteRef.current = "";
-    setInstalledQuery("");
     const next = new URLSearchParams(searchParams);
     for (const key of ["query", "state", "source", "category"]) {
       next.delete(key);
@@ -224,7 +185,7 @@ export function PluginsOverview({
       plugins
         .filter((plugin) =>
           pluginMatchesInstalledFilters(plugin, {
-            query: installedQuery,
+            query: debouncedInstalledQuery,
             states: stateFilters,
             sources: sourceFilters,
             categories: categoryFilters,
@@ -250,7 +211,7 @@ export function PluginsOverview({
         }),
     [
       categoryFilters,
-      installedQuery,
+      debouncedInstalledQuery,
       installedSortDirection,
       plugins,
       sourceFilters,

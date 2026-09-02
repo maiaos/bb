@@ -38,7 +38,10 @@ const GIT_PLUGIN = {
   provenance: "catalog" as const,
   isOrphanedBuiltin: false,
   catalogEntryId: "prompt-shaper",
+  catalogMarketplaceName: "bb-community",
   publisherLabel: "BB Community",
+  categoryId: null,
+  category: null,
   sourceDisplay: "git · github.com/brsbl/bb-plugins",
   updateState: { ...EMPTY_PLUGIN_UPDATE_STATE, availableVersion: FULL_HASH },
 } satisfies PluginListItem;

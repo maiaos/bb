@@ -134,7 +134,10 @@ const PLUGIN: PluginListItem = {
   provenance: "catalog",
   isOrphanedBuiltin: false,
   catalogEntryId: "github",
+  catalogMarketplaceName: "bb-community",
   publisherLabel: "BB Community",
+  categoryId: null,
+  category: null,
   sourceDisplay: "BB Official · GitHub",
   updateState: EMPTY_PLUGIN_UPDATE_STATE,
 };

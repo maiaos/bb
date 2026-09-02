@@ -1,5 +1,6 @@
 import type {
   InstalledPlugin,
+  PluginCatalogCategoryId,
   PluginSettingDescriptor,
   PluginSettingsResponse,
 } from "@bb/server-contract";
@@ -52,10 +53,10 @@ export interface PluginListItem {
   source: string;
   isOrphanedBuiltin: boolean;
   catalogEntryId: string | null;
-  catalogMarketplaceName?: string | null;
+  catalogMarketplaceName: string | null;
   publisherLabel: string | null;
-  categoryId?: string | null;
-  category?: string | null;
+  categoryId: PluginCatalogCategoryId | null;
+  category: string | null;
   sourceDisplay: string;
   updateState: PluginUpdateState;
 }

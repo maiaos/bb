@@ -373,7 +373,10 @@ const PLUGIN: PluginListItem = {
   provenance: "direct",
   isOrphanedBuiltin: false,
   catalogEntryId: null,
+  catalogMarketplaceName: null,
   publisherLabel: null,
+  categoryId: null,
+  category: null,
   sourceDisplay: "npm · @bb-plugins/github",
   updateState: EMPTY_PLUGIN_UPDATE_STATE,
 };

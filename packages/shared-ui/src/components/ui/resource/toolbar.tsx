@@ -79,6 +79,7 @@ export function ResourceTabDescription({ children }: { children: ReactNode }) {
 export interface ResourceOption {
   id: string;
   label: string;
+  accessibleLabel?: string;
   leading?: ReactNode;
   description?: string;
   disabled?: boolean;
@@ -191,6 +192,7 @@ export function ResourceOptionMenu({
           return (
             <DropdownMenuItem
               key={option.id}
+              aria-label={option.accessibleLabel}
               disabled={option.disabled}
               onSelect={(event) => {
                 if (selected || option.disabled) {
@@ -298,6 +300,7 @@ export function ResourceMultiSelectMenu({
         {options.map((option) => (
           <DropdownMenuCheckboxItem
             key={option.id}
+            aria-label={option.accessibleLabel}
             checked={selected.has(option.id)}
             disabled={option.disabled}
             className={cn(compact && "md:py-1 md:pl-1.5 md:pr-7")}
@@ -382,6 +385,7 @@ export function ResourceFilterMenu({
               {group.options.map((option) => (
                 <DropdownMenuCheckboxItem
                   key={option.id}
+                  aria-label={option.accessibleLabel}
                   checked={selected.has(option.id)}
                   disabled={option.disabled}
                   className={cn(compact && "md:py-1 md:pl-1.5 md:pr-7")}
