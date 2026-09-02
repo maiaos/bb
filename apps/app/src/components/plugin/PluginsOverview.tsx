@@ -27,6 +27,7 @@ import {
 import { BrowsePluginsTab } from "@/components/plugin/management/BrowsePluginsTab";
 import { CheckPluginUpdatesButton } from "@/components/plugin/management/CheckPluginUpdatesButton";
 import { InstalledPluginsTab } from "@/components/plugin/management/InstalledPluginsTab";
+import { PluginAuthorPage } from "@/components/plugin/management/PluginAuthorPage";
 import {
   PluginBrowseCategoryFilter,
   type PluginBrowseCategoryOption,
@@ -106,6 +107,7 @@ export function PluginsOverview({
     [listQuery.data?.plugins],
   );
   const activeMode = modeFromSearchParams(searchParams.get("view"));
+  const authorKey = searchParams.get("author");
   const installedQuery = searchParams.get("query") ?? "";
   const [debouncedInstalledQuery] = useDebounceValue(
     installedQuery.trim(),
@@ -253,16 +255,25 @@ export function PluginsOverview({
 
   let content: ReactNode;
   if (activeMode === "browse") {
-    content = (
-      <BrowsePluginsTab
-        onInstall={(initial) => setAddDialog({ open: true, initial })}
-        onOpenPlugin={
-          onOpenPlugin ??
-          ((pluginId) => navigate(getPluginDetailRoutePath({ pluginId })))
-        }
-        onInstallFromSource={() => setAddDialog({ open: true, initial: null })}
-      />
-    );
+    const openPlugin =
+      onOpenPlugin ??
+      ((pluginId: string) => navigate(getPluginDetailRoutePath({ pluginId })));
+    content =
+      authorKey === null ? (
+        <BrowsePluginsTab
+          onInstall={(initial) => setAddDialog({ open: true, initial })}
+          onOpenPlugin={openPlugin}
+          onInstallFromSource={() =>
+            setAddDialog({ open: true, initial: null })
+          }
+        />
+      ) : (
+        <PluginAuthorPage
+          authorKey={authorKey}
+          onInstall={(initial) => setAddDialog({ open: true, initial })}
+          onOpenPlugin={openPlugin}
+        />
+      );
   } else {
     content = (
       <ResourceCollectionViewport
