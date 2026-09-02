@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   ResourceInfiniteScrollSentinel,
@@ -49,6 +49,8 @@ import {
 } from "@/lib/route-paths";
 
 type PluginsCollectionMode = "installed" | "browse";
+
+const INSTALLED_QUERY_URL_DELAY_MS = 300;
 
 function modeFromSearchParams(value: string | null): PluginsCollectionMode {
   if (value === "installed") return value;
@@ -104,7 +106,10 @@ export function PluginsOverview({
     [listQuery.data?.plugins],
   );
   const activeMode = modeFromSearchParams(searchParams.get("view"));
-  const installedQuery = searchParams.get("query") ?? "";
+  const installedQueryParam = searchParams.get("query") ?? "";
+  const [installedQuery, setInstalledQuery] = useState(installedQueryParam);
+  const installedQueryTimeoutRef = useRef<number | null>(null);
+  const installedQueryWriteRef = useRef<string | null>(null);
   const stateFilters = stateFiltersFromSearchParams(searchParams);
   const sourceFilters = sourceFiltersFromSearchParams(searchParams);
   const categoryFilters = categoryFiltersFromSearchParams(searchParams);
@@ -149,6 +154,47 @@ export function PluginsOverview({
     initial: AddPluginInitial | null;
   }>({ open: false, initial: null });
 
+  useEffect(() => {
+    if (installedQueryWriteRef.current === installedQueryParam) {
+      installedQueryWriteRef.current = null;
+      return;
+    }
+    if (installedQueryTimeoutRef.current !== null) {
+      window.clearTimeout(installedQueryTimeoutRef.current);
+      installedQueryTimeoutRef.current = null;
+    }
+    setInstalledQuery(installedQueryParam);
+  }, [installedQueryParam]);
+
+  useEffect(
+    () => () => {
+      if (installedQueryTimeoutRef.current !== null) {
+        window.clearTimeout(installedQueryTimeoutRef.current);
+      }
+    },
+    [],
+  );
+
+  const changeInstalledQuery = (value: string) => {
+    setInstalledQuery(value);
+    if (installedQueryTimeoutRef.current !== null) {
+      window.clearTimeout(installedQueryTimeoutRef.current);
+    }
+    installedQueryTimeoutRef.current = window.setTimeout(() => {
+      installedQueryWriteRef.current = value;
+      setSearchParams(
+        (current) => {
+          const next = new URLSearchParams(current);
+          if (value === "") next.delete("query");
+          else next.set("query", value);
+          return next;
+        },
+        { replace: true },
+      );
+      installedQueryTimeoutRef.current = null;
+    }, INSTALLED_QUERY_URL_DELAY_MS);
+  };
+
   const changeInstalledParams = (
     key: "state" | "source" | "category",
     values: readonly string[],
@@ -160,6 +206,12 @@ export function PluginsOverview({
   };
 
   const clearInstalledFilters = () => {
+    if (installedQueryTimeoutRef.current !== null) {
+      window.clearTimeout(installedQueryTimeoutRef.current);
+      installedQueryTimeoutRef.current = null;
+    }
+    installedQueryWriteRef.current = "";
+    setInstalledQuery("");
     const next = new URLSearchParams(searchParams);
     for (const key of ["query", "state", "source", "category"]) {
       next.delete(key);
@@ -260,12 +312,7 @@ export function PluginsOverview({
           <ResourceToolbar
             searchValue={installedQuery}
             searchPlaceholder="Search installed plugins"
-            onSearchChange={(value) => {
-              const next = new URLSearchParams(searchParams);
-              if (value === "") next.delete("query");
-              else next.set("query", value);
-              setSearchParams(next, { replace: true });
-            }}
+            onSearchChange={changeInstalledQuery}
             action={installedActions}
             controls={
               <>

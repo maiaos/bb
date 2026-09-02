@@ -1,3 +1,4 @@
+import { PLUGIN_CATALOG_CATEGORIES, pluginCatalogCategory } from "@bb/domain";
 import type { PluginListItem } from "@/hooks/queries/plugin-settings-queries";
 import { pluginNeedsAttention } from "@/hooks/usePluginAttention";
 
@@ -89,7 +90,12 @@ export function installedPluginSourceFilter(
     return `marketplace:${marketplaceName}`;
   }
   if (plugin.provenance === "builtin") return "bb-official";
-  if (plugin.source.startsWith("git:")) return "git";
+  if (
+    plugin.source.startsWith("git:") ||
+    /^https?:\/\//iu.test(plugin.source)
+  ) {
+    return "git";
+  }
   if (plugin.source.startsWith("npm:")) return "npm";
   if (plugin.source.startsWith("path:")) return "path";
   return null;
@@ -159,26 +165,50 @@ export function installedCategoryFacetOptions(
 ): InstalledFacetOption[] {
   const labels = new Map<string, string>();
   const counts = new Map<string, number>();
+  const unknownIds: string[] = [];
   for (const plugin of plugins) {
     const id = installedPluginCategoryFilter(plugin);
+    if (!labels.has(id)) {
+      const category = pluginCatalogCategory(id);
+      labels.set(
+        id,
+        id === UNCATEGORIZED_INSTALLED_FILTER
+          ? "Uncategorized"
+          : (category?.displayName ?? plugin.category ?? id),
+      );
+      if (id !== UNCATEGORIZED_INSTALLED_FILTER && category === undefined) {
+        unknownIds.push(id);
+      }
+    }
+    counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  for (const id of selected) {
+    if (labels.has(id)) continue;
+    const category = pluginCatalogCategory(id);
     labels.set(
       id,
       id === UNCATEGORIZED_INSTALLED_FILTER
         ? "Uncategorized"
-        : (plugin.category ?? id),
+        : (category?.displayName ?? id),
     );
-    counts.set(id, (counts.get(id) ?? 0) + 1);
+    if (id !== UNCATEGORIZED_INSTALLED_FILTER && category === undefined) {
+      unknownIds.push(id);
+    }
   }
-  for (const id of selected) {
-    if (!labels.has(id)) labels.set(id, id);
-  }
-  return [...labels]
-    .map(([id, label]) => ({ id, label, count: counts.get(id) ?? 0 }))
-    .sort((left, right) => {
-      if (left.id === UNCATEGORIZED_INSTALLED_FILTER) return 1;
-      if (right.id === UNCATEGORIZED_INSTALLED_FILTER) return -1;
-      return left.label.localeCompare(right.label);
-    });
+  const orderedIds = [
+    ...PLUGIN_CATALOG_CATEGORIES.map((category) => category.id).filter((id) =>
+      labels.has(id),
+    ),
+    ...unknownIds,
+    ...(labels.has(UNCATEGORIZED_INSTALLED_FILTER)
+      ? [UNCATEGORIZED_INSTALLED_FILTER]
+      : []),
+  ];
+  return orderedIds.map((id) => ({
+    id,
+    label: labels.get(id) ?? id,
+    count: counts.get(id) ?? 0,
+  }));
 }
 
 export function pluginMatchesInstalledFilters(
@@ -213,7 +243,13 @@ export function pluginMatchesInstalledFilters(
   }
   const query = filters.query.trim().toLocaleLowerCase();
   if (query === "") return true;
-  return [plugin.name ?? "", plugin.id, plugin.description ?? ""]
+  return [
+    plugin.name ?? "",
+    plugin.id,
+    plugin.description ?? "",
+    plugin.version,
+    plugin.sourceDisplay,
+  ]
     .join(" ")
     .toLocaleLowerCase()
     .includes(query);
