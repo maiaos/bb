@@ -170,6 +170,9 @@ describe("fetchPluginList envelope", () => {
             ...ROW,
             source: "path:/plugins/linear",
             rootDir: "/plugins/linear",
+            catalogMarketplaceName: "bb-community",
+            categoryId: "tasks-and-workflows",
+            category: "Tasks & Workflows",
             handlerStats: {
               count: 4,
               totalMs: 12,
@@ -197,6 +200,9 @@ describe("fetchPluginList envelope", () => {
     const plugin = result.plugins[0];
     expect(plugin?.source).toBe("path:/plugins/linear");
     expect(plugin?.rootDir).toBe("/plugins/linear");
+    expect(plugin?.catalogMarketplaceName).toBe("bb-community");
+    expect(plugin?.categoryId).toBe("tasks-and-workflows");
+    expect(plugin?.category).toBe("Tasks & Workflows");
     expect(plugin?.handlerStats.errorCount).toBe(1);
     expect(plugin?.services).toEqual([{ name: "sync", state: "backoff" }]);
     expect(plugin?.schedules[0]?.lastError).toBe("rate limited");
